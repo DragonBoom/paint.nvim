@@ -162,14 +162,49 @@ function M.enable()
       end
     end,
   })
-  vim.api.nvim_create_autocmd("WinScrolled", {
-    group = group,
-    callback = function(event)
-      if M.bufs[event.buf] then
-        M.highlight_buf(event.buf)
-      end
-    end,
-  })
+
+    -- 2023.05.23 add rate limit：first keep schedule，others only update the "next time"
+    local bufLastTimeMap = {}   -- {buf1 = nextTime, buf2 = nextTime}
+    local nextTimeThreshold = 500 -- millis
+
+    local function getCurrent() return vim.loop.hrtime() / 1000000 end
+    local function getNext(buf) return bufLastTimeMap[buf] + nextTimeThreshold end
+
+    local function doOrWaitNextTime(buf, current)
+        current = current or getCurrent()
+        local next = getNext(buf)
+        if current >= next then
+            bufLastTimeMap[buf] = nil
+            M.highlight_buf(buf)
+        else
+            vim.defer_fn(function()
+                current = getCurrent()
+                next = getNext(buf)
+                if current >= next then
+                    bufLastTimeMap[buf] = nil
+                    M.highlight_buf(buf)
+                else
+                    doOrWaitNextTime(buf)
+                end
+            end, next - current)
+        end
+    end
+
+    vim.api.nvim_create_autocmd("WinScrolled", {
+        group = group,
+        callback = function(event)
+            local buf = event.buf
+            local current = getCurrent()
+            if M.bufs[buf] then
+                if not bufLastTimeMap[buf] then
+                    bufLastTimeMap[buf] = current
+                    doOrWaitNextTime(buf, current)
+                else
+                    bufLastTimeMap[buf] = current
+                end
+            end
+        end,
+    })
 
   vim.schedule(function()
     -- attach to all bufs in visible windows
