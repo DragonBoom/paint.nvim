@@ -1,3 +1,5 @@
+-- 2023.06.01 impl pre process, and only reset by InsertLeave almostly
+
 local config = require("paint.config")
 
 local M = {}
@@ -5,45 +7,87 @@ M.enabled = false
 ---@type table<number,number>
 M.bufs = {}
 
+local bufLineBorderCache = {} -- {'buf1' = {1=1, 2=1, 3=0, }, }
+
 ---@param buf number
 ---@param first? number
 ---@param last? number
-function M.highlight(buf, first, last)
+function M.highlight(buf, first, last, onlyCursorLine, skipCache)
     if not vim.api.nvim_buf_is_valid(buf) then
         return
     end
 
+    local endLine = vim.fn.line '$'
     first = first or 1
-    last = last or vim.api.nvim_buf_line_count(buf)
+    last = last or endLine
+
+    local borderCache = bufLineBorderCache[buf]
+    if not borderCache then
+        borderCache = {}
+        bufLineBorderCache[buf] = borderCache
+    end
+
+    if not skipCache then
+        if onlyCursorLine then
+            if buf ~= vim.api.nvim_get_current_buf() then return end
+            first = vim.fn.line '.'
+            last = first
+            vim.api.nvim_buf_clear_namespace(buf, config.ns, first - 1, last) -- only clear here
+        else
+            if not (borderCache[first] and borderCache[last] or first == 0 or last == endLine) then
+                local unCacheCount = 0
+                for i = first, last do
+                    if not borderCache[i] then
+                        unCacheCount = unCacheCount + 1
+                    end
+                end
+                -- pre process:
+                if last - first > 10 and unCacheCount < (last - first) / 3 then
+                    local newCount = last - first
+                    if borderCache[first] then
+                        last = last + newCount
+                        if last > endLine then last = endLine end
+                    else
+                        first = first - newCount
+                        if first < 1 then first = 1 end
+                    end
+                end
+            end
+        end
+    end
+
     local lines = vim.api.nvim_buf_get_lines(buf, first - 1, last, false)
-
-    vim.api.nvim_buf_clear_namespace(buf, config.ns, first - 1, last - 1)
-
     local highlights = M.get_highlights(buf)
 
     for l, line in ipairs(lines) do
         local lnum = first + l - 1
 
-        for _, hl in ipairs(highlights) do
-            local from, to, match = line:find(hl.pattern)
+        if skipCache or onlyCursorLine or borderCache[lnum] ~= 1 then
+            if not skipCache then
+                borderCache[lnum] = 1
+            end
+            for _, hl in ipairs(highlights) do
+                local from, to, match = line:find(hl.pattern)
 
-            while from do
-                if match and match ~= "" then
-                    from, to = line:find(match, from, true)
+                while from do
+                    if match and match ~= "" then
+                        from, to = line:find(match, from, true)
+                    end
+
+                    vim.api.nvim_buf_set_extmark(
+                        buf,
+                        config.ns,
+                        lnum - 1,
+                        from - 1,
+                        { end_col = to, hl_group = hl.hl, priority = 110 }
+                    )
+
+                    from, to, match = line:find(hl.pattern, to + 1)
                 end
-
-                vim.api.nvim_buf_set_extmark(
-                    buf,
-                    config.ns,
-                    lnum - 1,
-                    from - 1,
-                    { end_col = to, hl_group = hl.hl, priority = 110 }
-                )
-
-                from, to, match = line:find(hl.pattern, to + 1)
             end
         end
     end
+    bufLineBorderCache[buf] = borderCache
 end
 
 ---@return PaintHighlight[]
@@ -75,6 +119,7 @@ end
 function M.detach(buf)
     vim.api.nvim_buf_clear_namespace(buf, config.ns, 0, -1)
     M.bufs[buf] = nil
+    bufLineBorderCache[buf] = nil
 end
 
 function M.attach(buf)
@@ -92,14 +137,20 @@ function M.attach(buf)
             if not M.bufs[buf] then
                 return true
             end
+            bufLineBorderCache[buf] = nil
             vim.schedule(function()
-                M.highlight(buf, first + 1, last + 1)
+                -- only deal with extmark invalidation
+                local endL = vim.api.nvim_buf_line_count(buf)
+                if first == 0 and last == endL and last ~= 1 then
+                    M.highlight(buf, first + 1, last + 1, false, true)
+                end
             end)
         end,
         on_reload = function()
             if not M.bufs[buf] then
                 return true
             end
+            bufLineBorderCache[buf] = nil
             M.highlight_buf(buf)
         end,
         on_detach = function()
@@ -112,17 +163,17 @@ function M.attach(buf)
     M.highlight_buf(buf)
 end
 
-function M.highlight_buf(buf)
+function M.highlight_buf(buf, onlyCursorLine)
     local wins = vim.api.nvim_list_wins()
     for _, win in ipairs(wins) do
         if vim.api.nvim_win_get_buf(win) == buf then
-            M.highlight_win(win)
+            M.highlight_win(win, onlyCursorLine)
         end
     end
 end
 
 -- highlights the visible range of the window
-function M.highlight_win(win)
+function M.highlight_win(win, onlyCursorLine)
     win = win or vim.api.nvim_get_current_win()
 
     if not vim.api.nvim_win_is_valid(win) then
@@ -130,19 +181,17 @@ function M.highlight_win(win)
     end
 
     local buf = vim.api.nvim_win_get_buf(win)
-    if not M.bufs[buf] then
-        return
-    end
 
     vim.api.nvim_win_call(win, function()
         local first = vim.fn.line("w0")
         local last = vim.fn.line("w$")
-        M.highlight(buf, first, last)
+        M.highlight(buf, first, last, onlyCursorLine)
     end)
 end
 
 function M.disable()
     M.bufs = {}
+    bufLineBorderCache = {}
     M.enabled = false
 end
 
@@ -163,67 +212,19 @@ function M.enable()
         end,
     })
 
-    -- 2023.05.23 add rate limit：first keep schedule，others only update the "next time"
-    -- will skil limit if is first time access(by record min, max windows line)
-    local bufLastTimeMap = {} -- {buf1 = nextTime, ...}
-    local bufMinMaxLineMap = {} -- {buf1 = {min=, max=}, ...}
-    local nextTimeThreshold = 500 -- millis
-
-    local function getCurrent() return vim.loop.hrtime() / 1000000 end
-    local function getNext(buf) return bufLastTimeMap[buf] + nextTimeThreshold end
-
-    local function doOrWaitNextTime(buf, current)
-        current = current or getCurrent()
-        local next = getNext(buf)
-        if current >= next then
-            bufLastTimeMap[buf] = nil
-            M.highlight_buf(buf)
-        else
-            vim.defer_fn(function()
-                current = getCurrent()
-                next = getNext(buf)
-                if current >= next then
-                    bufLastTimeMap[buf] = nil
-                    M.highlight_buf(buf)
-                else
-                    doOrWaitNextTime(buf)
-                end
-            end, next - current)
-        end
-    end
-
-    vim.api.nvim_create_autocmd("WinScrolled", {
+    vim.api.nvim_create_autocmd({ "WinScrolled" }, {
         group = group,
         callback = function(event)
             local buf = event.buf
-            local current = getCurrent()
-            if M.bufs[buf] then
-                local first = vim.fn.line("w0")
-                local last = vim.fn.line("w$")
-                if not bufMinMaxLineMap[buf] then
-                    bufMinMaxLineMap[buf] = {}
-                    bufMinMaxLineMap[buf].min = first
-                    bufMinMaxLineMap[buf].max = last
-                end
-                local skipLimit = false
-                if first < bufMinMaxLineMap[buf].min then
-                    bufMinMaxLineMap[buf].min = first
-                    skipLimit = true
-                end
-                if last > bufMinMaxLineMap[buf].max then
-                    bufMinMaxLineMap[buf].max = last
-                    skipLimit = true
-                end
+            M.highlight_buf(buf)
+        end,
+    })
 
-                if skipLimit then
-                    M.highlight_buf(buf)
-                elseif not bufLastTimeMap[buf] then
-                    bufLastTimeMap[buf] = current
-                    doOrWaitNextTime(buf, current)
-                else
-                    bufLastTimeMap[buf] = current
-                end
-            end
+    vim.api.nvim_create_autocmd({ 'InsertLeave' }, {
+        group = group,
+        callback = function(event)
+            local buf = event.buf
+            M.highlight_buf(buf, true)
         end,
     })
 
@@ -235,6 +236,10 @@ function M.enable()
             end
         end
     end)
+end
+
+function M.testCache(buf)
+    return vim.inspect(bufLineBorderCache[buf])
 end
 
 return M
