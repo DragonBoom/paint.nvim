@@ -66,6 +66,7 @@ function M.highlight(buf, first, last, onlyCursorLine, skipCache)
             if not skipCache then
                 borderCache[lnum] = 1
             end
+            vim.api.nvim_buf_clear_namespace(buf, config.ns, lnum - 1, lnum)
             for _, hl in ipairs(highlights) do
                 local from, to, match = line:find(hl.pattern)
 
@@ -238,8 +239,8 @@ function M.enable()
     end)
 end
 
-function M.testCache(buf)
-    return vim.inspect(bufLineBorderCache[buf])
+function M.clearCache(buf)
+    bufLineBorderCache[buf] = nil
 end
 
 return M
