@@ -140,6 +140,9 @@ function M.attach(buf)
             end
             bufLineBorderCache[buf] = nil
             vim.schedule(function()
+                if not (vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_is_loaded(buf)) then
+                    M.detach(buf)
+                end
                 -- only deal with extmark invalidation
                 local endL = vim.api.nvim_buf_line_count(buf)
                 if first == 0 and last == endL and last ~= 1 then
