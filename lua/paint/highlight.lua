@@ -118,7 +118,9 @@ function M.is(buf, filter)
 end
 
 function M.detach(buf)
-    vim.api.nvim_buf_clear_namespace(buf, config.ns, 0, -1)
+    if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_is_loaded(buf) then
+        vim.api.nvim_buf_clear_namespace(buf, config.ns, 0, -1)
+    end
     M.bufs[buf] = nil
     bufLineBorderCache[buf] = nil
 end
