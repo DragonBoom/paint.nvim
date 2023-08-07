@@ -145,10 +145,12 @@ function M.attach(buf)
                 if not (vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_is_loaded(buf)) then
                     M.detach(buf)
                 end
-                -- only deal with extmark invalidation
-                local endL = vim.api.nvim_buf_line_count(buf)
-                if first == 0 and last == endL and last ~= 1 then
-                    M.highlight(buf, first + 1, last + 1, false, true)
+                if (vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_is_loaded(buf)) then
+                    -- only deal with extmark invalidation
+                    local endL = vim.api.nvim_buf_line_count(buf)
+                    if first == 0 and last == endL and last ~= 1 then
+                        M.highlight(buf, first + 1, last + 1, false, true)
+                    end
                 end
             end)
         end,
