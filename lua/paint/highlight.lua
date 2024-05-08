@@ -87,6 +87,8 @@ function M.highlight(buf, first, last, onlyCursorLine, skipCache)
                 local from, to, match = line:find(hl.pattern)
 
                 while from do
+                    -- 如果正则有【局部匹配】的结果，则将高亮位置设为仅限该匹配内容
+                    -- 但这逻辑有问题，如果在下标 from 之后、在真正的目标 match 之前，存在与 match 相同的内容，则会匹配到该内容
                     if match and match ~= "" then
                         from, to = line:find(match, from, true)
                     end
